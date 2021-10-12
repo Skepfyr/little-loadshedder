@@ -6,39 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tower::{Layer, Service};
-
-pub struct LoadShedLayer {
-    p95: Duration,
-    /// Seconds
-    moving_average: Arc<Mutex<f64>>,
-    /// In the range (0, 1)
-    /// .25 means new values account for 25% of the moving average
-    ewma_param: f64,
-}
-
-impl LoadShedLayer {
-    pub fn new(ewma_param: f64, p95: Duration) -> Self {
-        Self {
-            p95,
-            moving_average: Arc::new(Mutex::new(p95.as_secs_f64())),
-            ewma_param,
-        }
-    }
-}
-
-impl<Service> Layer<Service> for LoadShedLayer {
-    type Service = LoadShed<Service>;
-
-    fn layer(&self, inner: Service) -> Self::Service {
-        LoadShed {
-            inner,
-            p95: self.p95,
-            moving_average: Arc::clone(&self.moving_average),
-            ewma_param: self.ewma_param,
-        }
-    }
-}
+use tower::Service;
 
 #[derive(Debug, Clone)]
 pub struct LoadShed<Inner> {
@@ -49,6 +17,17 @@ pub struct LoadShed<Inner> {
     /// In the range (0, 1)
     /// .25 means new values account for 25% of the moving average
     ewma_param: f64,
+}
+
+impl<Inner> LoadShed<Inner> {
+    pub fn new(inner: Inner, ewma_param: f64, p95: Duration) -> Self {
+        Self {
+            inner,
+            p95,
+            moving_average: Arc::new(Mutex::new(p95.as_secs_f64())),
+            ewma_param,
+        }
+    }
 }
 
 impl<Request, Inner> Service<Request> for LoadShed<Inner>
@@ -92,7 +71,6 @@ where
     type Output = Inner::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        
         let this = self.project();
         let result = match this.inner.poll(cx) {
             Poll::Ready(result) => result,
