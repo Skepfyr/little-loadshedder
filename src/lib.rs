@@ -8,24 +8,36 @@ use std::{
 
 use tower::Service;
 
+/// Load Shed Services current state of the world
 #[derive(Debug, Clone)]
-pub struct LoadShed<Inner> {
-    inner: Inner,
-    p95: Duration,
+struct LoadShedConf {
+    target: Duration,
     /// Seconds
     moving_average: Arc<Mutex<f64>>,
     /// In the range (0, 1)
     /// .25 means new values account for 25% of the moving average
     ewma_param: f64,
+    /// Max inflight requests
+    inflight: Arc<Mutex<usize>>,
+}
+
+
+#[derive(Debug, Clone)]
+pub struct LoadShed<Inner> {
+    conf: LoadShedConf,
+    inner: Inner,
 }
 
 impl<Inner> LoadShed<Inner> {
-    pub fn new(inner: Inner, ewma_param: f64, p95: Duration) -> Self {
+    pub fn new(inner: Inner, ewma_param: f64, target: Duration) -> Self {
         Self {
             inner,
-            p95,
-            moving_average: Arc::new(Mutex::new(p95.as_secs_f64())),
-            ewma_param,
+            conf: LoadShedConf {
+                target,
+                moving_average: Arc::new(Mutex::new(target.as_secs_f64())),
+                ewma_param,
+                inflight: Arc::new(Mutex::new(1))
+            }
         }
     }
 }
@@ -47,9 +59,8 @@ where
     fn call(&mut self, req: Request) -> Self::Future {
         LoadShedFut {
             inner: self.inner.call(req),
-            start: Instant::now(),
-            ewma_param: self.ewma_param,
-            moving_average: Arc::clone(&self.moving_average),
+            conf: self.conf.clone(),
+            start: Instant::now()
         }
     }
 }
@@ -59,8 +70,7 @@ pub struct LoadShedFut<Inner> {
     #[pin]
     inner: Inner,
     start: Instant,
-    ewma_param: f64,
-    moving_average: Arc<Mutex<f64>>,
+    conf: LoadShedConf,
 }
 
 impl<Inner> Future for LoadShedFut<Inner>
@@ -80,9 +90,9 @@ where
         let elapsed: f64 = this.start.elapsed().as_secs_f64();
         println!("Elapsed time for request is {}s", elapsed);
         let moving_average = {
-            let mut moving_average = this.moving_average.lock().unwrap();
+            let mut moving_average = this.conf.moving_average.lock().unwrap();
             *moving_average =
-                (*moving_average * (1.0 - *this.ewma_param)) + (*this.ewma_param * elapsed);
+                (*moving_average * (1.0 - this.conf.ewma_param)) + (this.conf.ewma_param * elapsed);
             *moving_average
         };
         println!("New average: {}", moving_average);
