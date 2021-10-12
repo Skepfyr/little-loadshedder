@@ -24,7 +24,10 @@ struct LoadShedConf {
 
 impl LoadShedConf {
     fn start(&self) -> bool {
-        let mut free_capacity = self.free_capacity.lock().expect("To be able to lock inflight in conf");
+        let mut free_capacity = self
+            .free_capacity
+            .lock()
+            .expect("To be able to lock inflight in conf");
         if *free_capacity > 0 {
             *free_capacity -= 1;
             return true;
@@ -51,7 +54,12 @@ impl<Inner> LoadShed<Inner> {
                 target,
                 moving_average: Arc::new(Mutex::new(target.as_secs_f64())),
                 ewma_param,
-                free_capacity: Arc::new(Mutex::new(1)),
+                free_capacity: Arc::new(
+                    // Checked subtractions are hard on atomics
+                    // This emulates a Semaphore, so we could pull in a proper one
+                    #[allow(clippy::mutex_atomic)]
+                    Mutex::new(1),
+                ),
             },
         }
     }
@@ -66,83 +74,70 @@ pub enum LoadShedError<T> {
     Overload,
 }
 
-impl<Request, Inner> Service<Request> for LoadShed<Inner>
-    where Inner: Service<Request>,
-{
+impl<Request, Inner: Service<Request>> Service<Request> for LoadShed<Inner> {
     type Response = Inner::Response;
     type Error = LoadShedError<Inner::Error>;
-    type Future = LoadShedResult<Inner::Future>;
+    type Future = LoadShedFut<Inner::Future>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx).map_err(|err| LoadShedError::Inner(err) )
+        self.inner.poll_ready(cx).map_err(LoadShedError::Inner)
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
         if self.conf.start() {
-            LoadShedResult::Future(
-                LoadShedFut {
-                    inner: self.inner.call(req),
-                    conf: self.conf.clone(),
-                    start: Instant::now(),
-                }
-            )
+            LoadShedFut(LoadShedFutInner::Future {
+                inner: self.inner.call(req),
+                conf: self.conf.clone(),
+                start: Instant::now(),
+            })
         } else {
-            LoadShedResult::Shed
-        }
-    }
-}
-
-/// Calling .project() on a LoadShedResult yields a LoadShedProj
-/// type which has pinned fields
-#[pin_project::pin_project(project=LoadShedProj)]
-pub enum LoadShedResult<Inner> {
-    Future(#[pin] LoadShedFut<Inner>),
-    Shed,
-}
-
-impl<Inner, Output, Error> Future for LoadShedResult<Inner>
-    where Inner: Future<Output=Result<Output,Error>>
-{
-    type Output = Result<Output, LoadShedError<Error>>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.project() {
-            LoadShedProj::Future(fut) => fut.poll(cx).map_err(|err| LoadShedError::Inner(err)),
-            LoadShedProj::Shed => Poll::Ready(Err(LoadShedError::Overload)),
+            LoadShedFut(LoadShedFutInner::Shed)
         }
     }
 }
 
 #[pin_project::pin_project]
-pub struct LoadShedFut<Inner> {
-    #[pin]
-    inner: Inner,
-    start: Instant,
-    conf: LoadShedConf,
+pub struct LoadShedFut<Inner>(#[pin] LoadShedFutInner<Inner>);
+
+/// Calling .project() on a LoadShedResult yields a LoadShedFutProj
+/// type which has pinned fields
+#[pin_project::pin_project(project = LoadShedFutProj)]
+enum LoadShedFutInner<Inner> {
+    Future {
+        #[pin]
+        inner: Inner,
+        start: Instant,
+        conf: LoadShedConf,
+    },
+    Shed,
 }
 
-impl<Inner> Future for LoadShedFut<Inner>
-    where Inner: Future,
+impl<Inner, Output, Error> Future for LoadShedFut<Inner>
+where
+    Inner: Future<Output = Result<Output, Error>>,
 {
-    type Output = Inner::Output;
+    type Output = Result<Output, LoadShedError<Error>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        let result = match this.inner.poll(cx) {
+        let (inner, start, conf) = match self.project().0.project() {
+            LoadShedFutProj::Future { inner, start, conf } => (inner, start, conf),
+            LoadShedFutProj::Shed => return Poll::Ready(Err(LoadShedError::Overload)),
+        };
+        let result = match inner.poll(cx) {
             Poll::Ready(result) => result,
             Poll::Pending => return Poll::Pending,
         };
 
-        let elapsed: f64 = this.start.elapsed().as_secs_f64();
+        let elapsed: f64 = start.elapsed().as_secs_f64();
         println!("Elapsed time for request is {}s", elapsed);
         let moving_average = {
-            let mut moving_average = this.conf.moving_average.lock().unwrap();
+            let mut moving_average = conf.moving_average.lock().unwrap();
             *moving_average =
-                (*moving_average * (1.0 - this.conf.ewma_param)) + (this.conf.ewma_param * elapsed);
+                (*moving_average * (1.0 - conf.ewma_param)) + (conf.ewma_param * elapsed);
             *moving_average
         };
-        this.conf.stop();
+        conf.stop();
         println!("New average: {}", moving_average);
-        Poll::Ready(result)
+        Poll::Ready(Ok(result?))
     }
 }
