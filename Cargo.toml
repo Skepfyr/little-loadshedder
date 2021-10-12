@@ -1,0 +1,14 @@
+[package]
+name = "underload"
+version = "0.1.0"
+edition = "2018"
+publish = ["metaswitch"]
+
+[dependencies]
+tower = "0.4"
+pin-project = "1"
+
+[dev-dependencies]
+hyper = { version = "0.14", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.4", features = ["make"] }
