@@ -41,15 +41,14 @@ impl Service<Request<Body>> for LinearService {
 
     fn call(&mut self, _req: Request<Body>) -> Self::Future {
         async move {
-            let rand = spawn_blocking(|| {
-                let mut rand: f64 = 0.0;
-                for _ in 0..10000 {
-                    rand += rand::random::<f64>();
-                }
-                rand
-            })
-            .await
-            .unwrap();
+            // let rand = spawn_blocking(|| {
+            //     let mut rand: f64 = 0.0;
+            //     for _ in 0..10000 {
+            //         rand += rand::random::<f64>();
+            //     }
+            //     rand
+            // })
+            let rand: f64 = 1337.37;
             Ok(Response::new(
                 format!("Hello, World - rand is {}", rand).into(),
             ))

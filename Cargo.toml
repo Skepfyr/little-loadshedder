@@ -5,7 +5,6 @@ edition = "2018"
 publish = ["metaswitch"]
 
 [dependencies]
-pin-project = "1"
 thiserror = "1"
 tokio = { version = "1", default-features = false, features = ["sync"] }
 tower = "0.4"
