@@ -7,7 +7,6 @@ use std::{
 
 use futures::{future::BoxFuture, FutureExt};
 use hyper::{Body, Request, Response, Server};
-use tokio::task::spawn_blocking;
 use tower::{make::Shared, Service};
 use underload::LoadShed;
 
@@ -48,10 +47,8 @@ impl Service<Request<Body>> for LinearService {
             //     }
             //     rand
             // })
-            let rand: f64 = 1337.37;
-            Ok(Response::new(
-                format!("Hello, World - rand is {}", rand).into(),
-            ))
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            Ok(Response::new("Hello, World".into()))
         }
         .boxed()
     }

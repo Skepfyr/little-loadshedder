@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -73,20 +74,21 @@ impl LoadShedConf {
                 1,
                 (stats.concurrency * ((self.target / stats.moving_average) - 1.0)).floor() as usize,
             );
-            if desired_queue_capacity > stats.queue_capacity {
-                //println!("Queue size ++ {}", desired_queue_capacity);
-                self.available_queue
-                    .add_permits(desired_queue_capacity - stats.queue_capacity)
-            } else if desired_queue_capacity < stats.queue_capacity {
-                //println!("Queue size -- {}", desired_queue_capacity);
-                match self
-                    .available_queue
-                    .try_acquire_many((stats.queue_capacity - desired_queue_capacity) as u32)
-                {
-                    Ok(permits) => permits.forget(),
-                    Err(TryAcquireError::NoPermits) => return Err(()),
-                    Err(TryAcquireError::Closed) => panic!(),
+            match desired_queue_capacity.cmp(&stats.queue_capacity) {
+                Ordering::Less => {
+                    match self
+                        .available_queue
+                        .try_acquire_many((stats.queue_capacity - desired_queue_capacity) as u32)
+                    {
+                        Ok(permits) => permits.forget(),
+                        Err(TryAcquireError::NoPermits) => return Err(()),
+                        Err(TryAcquireError::Closed) => panic!(),
+                    }
                 }
+                Ordering::Equal => {}
+                Ordering::Greater => self
+                    .available_queue
+                    .add_permits(desired_queue_capacity - stats.queue_capacity),
             }
             stats.queue_capacity = desired_queue_capacity;
         }
@@ -112,7 +114,8 @@ impl LoadShedConf {
         stats.moving_average =
             (stats.moving_average * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
         // println!("mAvg = {}, concurrency = {}, target = {}", stats.moving_average, stats.concurrency)
-        if self.available_concurrency.available_permits() == 0 && stats.moving_average < self.target {
+        if self.available_concurrency.available_permits() == 0 && stats.moving_average < self.target
+        {
             self.available_concurrency.add_permits(1);
             stats.concurrency += 1.0;
             println!(
@@ -156,6 +159,8 @@ pub enum LoadShedError<T> {
     Overload,
 }
 
+type BoxFuture<Output> = Pin<Box<dyn Future<Output = Output> + Send>>;
+
 impl<Request, Inner> Service<Request> for LoadShed<Inner>
 where
     Request: Send + 'static,
@@ -164,7 +169,7 @@ where
 {
     type Response = Inner::Response;
     type Error = LoadShedError<Inner::Error>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = BoxFuture<Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx).map_err(LoadShedError::Inner)
