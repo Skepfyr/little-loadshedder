@@ -1,10 +1,6 @@
 use std::{
     convert::Infallible,
     net::SocketAddr,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -32,9 +28,7 @@ async fn main() {
 }
 
 #[derive(Debug, Default, Clone)]
-struct LinearService {
-    in_flight: Arc<AtomicU64>,
-}
+struct LinearService;
 
 impl Service<Request<Body>> for LinearService {
     type Response = Response<Body>;
@@ -46,7 +40,6 @@ impl Service<Request<Body>> for LinearService {
     }
 
     fn call(&mut self, _req: Request<Body>) -> Self::Future {
-        let in_flight = self.in_flight.clone();
         async move {
             let rand = spawn_blocking(|| {
                 let mut rand: f64 = 0.0;

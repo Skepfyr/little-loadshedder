@@ -5,9 +5,10 @@ edition = "2018"
 publish = ["metaswitch"]
 
 [dependencies]
-tower = "0.4"
 pin-project = "1"
 thiserror = "1"
+tokio = { version = "1", default-features = false, features = ["sync"] }
+tower = "0.4"
 
 [dev-dependencies]
 hyper = { version = "0.14", features = ["full"] }
