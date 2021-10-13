@@ -5,44 +5,67 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-use thiserror::Error;
 
+use pin_project::{pin_project, pinned_drop};
+use thiserror::Error;
 use tower::Service;
 
 /// Load Shed Services current state of the world
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct LoadShedConf {
-    target: Duration,
+    target: f64,
     /// Seconds
-    moving_average: Arc<Mutex<f64>>,
+    moving_average: f64,
     /// In the range (0, 1)
     /// .25 means new values account for 25% of the moving average
     ewma_param: f64,
-    /// Subtract one when starting work, add one when completing
-    free_capacity: Arc<Mutex<usize>>,
+    capacity: usize,
+    inflight: usize,
+    last_decrement: Instant,
 }
 
 impl LoadShedConf {
-    fn start(&self) -> bool {
-        let mut free_capacity = self
-            .free_capacity
-            .lock()
-            .expect("To be able to lock inflight in conf");
-        if *free_capacity > 0 {
-            *free_capacity -= 1;
-            return true;
-        }
-        false
+    fn new(ewma_param: f64, target: f64) -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self {
+            target,
+            moving_average: target,
+            ewma_param,
+            capacity: 1,
+            inflight: 0,
+            last_decrement: Instant::now(),
+        }))
     }
 
-    fn stop(&self) {
-        *self.free_capacity.lock().unwrap() += 1;
+    fn start(&mut self) -> bool {
+        if self.inflight >= self.capacity {
+            return false;
+        }
+        self.inflight += 1;
+        true
+    }
+
+    fn stop(&mut self, elapsed: Duration) {
+        let elapsed = elapsed.as_secs_f64();
+        self.moving_average =
+            (self.moving_average * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
+        if self.capacity == self.inflight && self.moving_average < self.target {
+            self.capacity += 1;
+            println!("Increasing capacity by 1 to {}", self.capacity);
+            println!("Average time for request is {}s", self.moving_average);
+        } else if self.moving_average > self.target
+            && self.last_decrement.elapsed().as_secs_f64() > self.target
+        {
+            self.capacity -= 1;
+            self.last_decrement = Instant::now();
+            println!("Decreasing cap by 1");
+        }
+        self.inflight -= 1;
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct LoadShed<Inner> {
-    conf: LoadShedConf,
+    conf: Arc<Mutex<LoadShedConf>>,
     inner: Inner,
 }
 
@@ -50,17 +73,7 @@ impl<Inner> LoadShed<Inner> {
     pub fn new(inner: Inner, ewma_param: f64, target: Duration) -> Self {
         Self {
             inner,
-            conf: LoadShedConf {
-                target,
-                moving_average: Arc::new(Mutex::new(target.as_secs_f64())),
-                ewma_param,
-                free_capacity: Arc::new(
-                    // Checked subtractions are hard on atomics
-                    // This emulates a Semaphore, so we could pull in a proper one
-                    #[allow(clippy::mutex_atomic)]
-                    Mutex::new(1),
-                ),
-            },
+            conf: LoadShedConf::new(ewma_param, target.as_secs_f64()),
         }
     }
 }
@@ -84,11 +97,12 @@ impl<Request, Inner: Service<Request>> Service<Request> for LoadShed<Inner> {
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        if self.conf.start() {
+        if self.conf.lock().unwrap().start() {
             LoadShedFut(LoadShedFutInner::Future {
                 inner: self.inner.call(req),
-                conf: self.conf.clone(),
+                conf: Arc::clone(&self.conf),
                 start: Instant::now(),
+                stopped: false,
             })
         } else {
             LoadShedFut(LoadShedFutInner::Shed)
@@ -96,18 +110,19 @@ impl<Request, Inner: Service<Request>> Service<Request> for LoadShed<Inner> {
     }
 }
 
-#[pin_project::pin_project]
+#[pin_project]
 pub struct LoadShedFut<Inner>(#[pin] LoadShedFutInner<Inner>);
 
 /// Calling .project() on a LoadShedResult yields a LoadShedFutProj
 /// type which has pinned fields
-#[pin_project::pin_project(project = LoadShedFutProj)]
+#[pin_project(PinnedDrop, project = LoadShedFutProj)]
 enum LoadShedFutInner<Inner> {
     Future {
         #[pin]
         inner: Inner,
         start: Instant,
-        conf: LoadShedConf,
+        conf: Arc<Mutex<LoadShedConf>>,
+        stopped: bool,
     },
     Shed,
 }
@@ -119,25 +134,40 @@ where
     type Output = Result<Output, LoadShedError<Error>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (inner, start, conf) = match self.project().0.project() {
-            LoadShedFutProj::Future { inner, start, conf } => (inner, start, conf),
+        let (inner, start, conf, stopped) = match self.project().0.project() {
+            LoadShedFutProj::Future {
+                inner,
+                start,
+                conf,
+                stopped,
+            } => (inner, start, conf, stopped),
             LoadShedFutProj::Shed => return Poll::Ready(Err(LoadShedError::Overload)),
         };
         let result = match inner.poll(cx) {
             Poll::Ready(result) => result,
             Poll::Pending => return Poll::Pending,
         };
-
-        let elapsed: f64 = start.elapsed().as_secs_f64();
-        println!("Elapsed time for request is {}s", elapsed);
-        let moving_average = {
-            let mut moving_average = conf.moving_average.lock().unwrap();
-            *moving_average =
-                (*moving_average * (1.0 - conf.ewma_param)) + (conf.ewma_param * elapsed);
-            *moving_average
-        };
-        conf.stop();
-        println!("New average: {}", moving_average);
+        *stopped = true;
+        conf.lock().unwrap().stop(start.elapsed());
         Poll::Ready(Ok(result?))
+    }
+}
+
+#[pinned_drop]
+impl<Inner> PinnedDrop for LoadShedFutInner<Inner> {
+    fn drop(self: Pin<&mut Self>) {
+        match self.project() {
+            LoadShedFutProj::Future {
+                start,
+                conf,
+                stopped,
+                ..
+            } => {
+                if !*stopped {
+                    conf.lock().unwrap().stop(start.elapsed());
+                }
+            }
+            LoadShedFutProj::Shed => {}
+        }
     }
 }

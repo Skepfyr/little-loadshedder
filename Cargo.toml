@@ -13,3 +13,5 @@ thiserror = "1"
 hyper = { version = "0.14", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.4", features = ["make"] }
+futures = "0.3"
+rand = "0.8"
