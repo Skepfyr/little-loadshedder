@@ -219,8 +219,6 @@ impl<Inner> LoadShed<Inner> {
 pub enum LoadShedError<T> {
     #[error("Inner service error")]
     Inner(#[from] T),
-    #[error("Load shed due to full queue")]
-    QueueFull,
     #[error("Load shed due to overload")]
     Overload,
 }
@@ -252,7 +250,7 @@ where
                 }
                 Err(_) => {
                     increment_counter!("underload.request", "status" => "rejected");
-                    return Err(LoadShedError::QueueFull);
+                    return Err(LoadShedError::Overload);
                 }
             };
             let start = Instant::now();

@@ -10,10 +10,10 @@ use std::{
 };
 
 use futures::{future::BoxFuture, FutureExt};
-use hyper::{Body, Request, Response, Server};
+use hyper::{service::service_fn, Body, Request, Response, Server};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tower::{make::Shared, Service};
-use underload::LoadShed;
+use underload::{LoadShed, LoadShedError};
 
 #[tokio::main]
 async fn main() {
@@ -26,7 +26,17 @@ async fn main() {
         .unwrap();
 
     let service = LinearService::default();
-    let service = LoadShed::new(service, 0.01, Duration::from_millis(2000));
+    let mut service = LoadShed::new(service, 0.01, Duration::from_millis(2000));
+    let service = service_fn(move |req| {
+        let resp = service.call(req);
+        async move {
+            match resp.await {
+                Ok(resp) => Ok(resp),
+                Err(LoadShedError::Inner(inner)) => match inner {},
+                Err(LoadShedError::Overload) => Response::builder().status(503).body(Body::empty()),
+            }
+        }
+    });
 
     let server = Server::bind(&addr).serve(Shared::new(service));
 
