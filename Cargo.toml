@@ -5,6 +5,7 @@ edition = "2018"
 publish = ["metaswitch"]
 
 [dependencies]
+metrics = "0.17"
 thiserror = "1"
 tokio = { version = "1", default-features = false, features = ["sync"] }
 tower = "0.4"
@@ -15,3 +16,4 @@ tokio = { version = "1", features = ["full"] }
 tower = { version = "0.4", features = ["make"] }
 futures = "0.3"
 rand = "0.8"
+metrics-exporter-prometheus = "0.6"

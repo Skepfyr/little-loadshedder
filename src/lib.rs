@@ -19,6 +19,7 @@ use std::{
 // Possible extension: You could hit maximum throughput before target latency on system
 // and should not increase concurrency beyond that point.
 
+use metrics::{gauge, histogram, increment_counter};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tower::Service;
@@ -74,6 +75,7 @@ impl LoadShedConf {
                 1,
                 (stats.concurrency * ((self.target / stats.moving_average) - 1.0)).floor() as usize,
             );
+            gauge!("underload.capacity", desired_queue_capacity as f64, "type" => "queue");
             match desired_queue_capacity.cmp(&stats.queue_capacity) {
                 Ordering::Less => {
                     match self
@@ -110,25 +112,23 @@ impl LoadShedConf {
 
     fn stop(&mut self, elapsed: Duration, concurrency_permit: OwnedSemaphorePermit) {
         let elapsed = elapsed.as_secs_f64();
+        histogram!("underload.latency", elapsed);
         let mut stats = self.stats.lock().expect("To be able to lock stats");
         stats.moving_average =
             (stats.moving_average * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
-        // println!("mAvg = {}, concurrency = {}, target = {}", stats.moving_average, stats.concurrency)
+        gauge!("underload.average_latency", stats.moving_average);
         if self.available_concurrency.available_permits() == 0 && stats.moving_average < self.target
         {
             self.available_concurrency.add_permits(1);
             stats.concurrency += 1.0;
-            println!(
-                "Concurrency maxed & latency < target, adding permit {}",
-                stats.concurrency
-            );
+            gauge!("underload.capacity", stats.concurrency, "type" => "concurrency");
         } else if stats.moving_average > self.target
             && stats.last_decrement.elapsed().as_secs_f64() > self.target
         {
             concurrency_permit.forget();
             stats.concurrency -= 1.0;
             stats.last_decrement = Instant::now();
-            println!("Concurrency -- {}", stats.concurrency);
+            gauge!("underload.capacity", stats.concurrency, "type" => "concurrency");
         }
     }
 }
@@ -180,8 +180,14 @@ where
         let mut conf = self.conf.clone();
         Box::pin(async move {
             let permit = match conf.start().await {
-                Ok(permit) => permit,
-                Err(_) => return Err(LoadShedError::QueueFull),
+                Ok(permit) => {
+                    increment_counter!("underload.request", "type" => "accepted");
+                    permit
+                }
+                Err(_) => {
+                    increment_counter!("underload.request", "type" => "rejected");
+                    return Err(LoadShedError::QueueFull);
+                }
             };
             let start = Instant::now();
             let response = inner.call(req).await;
