@@ -61,6 +61,11 @@ struct ConfStats {
 
 impl LoadShedConf {
     fn new(ewma_param: f64, target: f64) -> Self {
+        gauge!("underload.capacity", 1.0, "component" => "service");
+        gauge!("underload.capacity", 1.0, "component" => "queue");
+        gauge!("underload.size", 0.0, "component" => "service");
+        gauge!("underload.size", 0.0, "component" => "queue");
+        gauge!("underload.average_latency", target);
         Self {
             target,
             ewma_param,
