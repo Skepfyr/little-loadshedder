@@ -1,6 +1,10 @@
 use std::{
     convert::Infallible,
     net::SocketAddr,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -8,7 +12,6 @@ use std::{
 use futures::{future::BoxFuture, FutureExt};
 use hyper::{Body, Request, Response, Server};
 use metrics_exporter_prometheus::PrometheusBuilder;
-use tokio::task::spawn_blocking;
 use tower::{make::Shared, Service};
 use underload::LoadShed;
 
@@ -18,12 +21,12 @@ async fn main() {
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
 
     PrometheusBuilder::new()
-        .set_buckets(&[0.0, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0])
+        .set_buckets(&[0.0, 0.05, 0.1, 0.15, 0.20, 0.25, 0.30])
         .install()
         .unwrap();
 
     let service = LinearService::default();
-    let service = LoadShed::new(service, 0.05, Duration::from_millis(2000));
+    let service = LoadShed::new(service, 0.01, Duration::from_millis(200));
 
     let server = Server::bind(&addr).serve(Shared::new(service));
 
@@ -34,7 +37,10 @@ async fn main() {
 }
 
 #[derive(Debug, Default, Clone)]
-struct LinearService;
+struct LinearService {
+    inflight: Arc<AtomicU64>,
+    average: Arc<Mutex<f64>>,
+}
 
 impl Service<Request<Body>> for LinearService {
     type Response = Response<Body>;
@@ -46,18 +52,18 @@ impl Service<Request<Body>> for LinearService {
     }
 
     fn call(&mut self, _req: Request<Body>) -> Self::Future {
+        let inflight = self.inflight.clone();
+        let average = self.average.clone();
         async move {
-            let rand = spawn_blocking(|| {
-                let mut rand: f64 = 0.0;
-                for _ in 0..100000 {
-                    rand += rand::random::<f64>();
-                }
-                rand
-            })
-            .await
-            .unwrap();
-            //tokio::time::sleep(Duration::from_millis(1000)).await;
-            Ok(Response::new(format!("Hello, World {}", rand).into()))
+            let count = inflight.fetch_add(1, Ordering::AcqRel) + 1;
+            let sleep = {
+                let mut average = average.lock().unwrap();
+                *average = *average * 0.95 + count as f64 * 0.05;
+                Duration::from_secs_f64((100.0 + *average * *average) / 1000.0)
+            };
+            tokio::time::sleep(sleep).await;
+            inflight.fetch_sub(1, Ordering::AcqRel);
+            Ok(Response::new(format!("Hello, World {}", count).into()))
         }
         .boxed()
     }

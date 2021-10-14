@@ -46,8 +46,10 @@ struct ConfStats {
     moving_average: f64,
     /// Concurrency: number of permits in the available_concurrency semaphore
     concurrency: u32,
-    /// Controls how often concurrency is updated
+    /// Controls how often concurrency is decreased
     last_decrement: Instant,
+    /// Controls how often concurrency is increased
+    last_increment: Instant,
     /// current capacity of queue
     queue_capacity: usize,
 }
@@ -63,12 +65,13 @@ impl LoadShedConf {
                 moving_average: target,
                 concurrency: 1,
                 last_decrement: Instant::now(),
+                last_increment: Instant::now(),
                 queue_capacity: 1,
             })),
         }
     }
 
-    async fn start(&self) -> Result<OwnedSemaphorePermit, ()> {
+    async fn start(&self) -> Result<Permit, ()> {
         {
             let mut stats = self.stats.lock().unwrap();
             let desired_queue_capacity = usize::max(
@@ -96,12 +99,11 @@ impl LoadShedConf {
             stats.queue_capacity = desired_queue_capacity;
         }
 
-        let queue_permit = match self.available_queue.try_acquire() {
-            Ok(queue_permit) => queue_permit,
+        let queue_permit = match self.available_queue.clone().try_acquire_owned() {
+            Ok(queue_permit) => Permit::new(queue_permit, "queue"),
             Err(TryAcquireError::NoPermits) => return Err(()),
             Err(TryAcquireError::Closed) => panic!("queue semaphore closed?"),
         };
-        increment_gauge!("underload.size", 1.0, "component" => "queue");
         let concurrency_permit = self
             .available_concurrency
             .clone()
@@ -109,23 +111,23 @@ impl LoadShedConf {
             .await
             .unwrap();
         drop(queue_permit);
-        decrement_gauge!("underload.size", 1.0, "component" => "queue");
-        increment_gauge!("underload.size", 1.0, "component" => "service");
-        Ok(concurrency_permit)
+        Ok(Permit::new(concurrency_permit, "service"))
     }
 
-    fn stop(&mut self, elapsed: Duration, concurrency_permit: OwnedSemaphorePermit) {
-        decrement_gauge!("underload.size", 1.0, "component" => "service");
+    fn stop(&mut self, elapsed: Duration, concurrency_permit: Permit) {
         let elapsed = elapsed.as_secs_f64();
         histogram!("underload.latency", elapsed);
         let mut stats = self.stats.lock().expect("To be able to lock stats");
         stats.moving_average =
             (stats.moving_average * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
         gauge!("underload.average_latency", stats.moving_average);
-        if self.available_concurrency.available_permits() == 0 && stats.moving_average < self.target
+        if self.available_concurrency.available_permits() == 0
+            && stats.moving_average < self.target
+            && stats.last_increment.elapsed().as_secs_f64() > self.target
         {
             self.available_concurrency.add_permits(1);
             stats.concurrency += 1;
+            stats.last_increment = Instant::now();
             gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
         } else if stats.moving_average > self.target
             && stats.last_decrement.elapsed().as_secs_f64() > self.target
@@ -136,6 +138,32 @@ impl LoadShedConf {
             stats.last_decrement = Instant::now();
             gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
         }
+    }
+}
+
+#[derive(Debug)]
+struct Permit {
+    permit: Option<OwnedSemaphorePermit>,
+    component: &'static str,
+}
+
+impl Permit {
+    fn new(permit: OwnedSemaphorePermit, component: &'static str) -> Self {
+        increment_gauge!("underload.size", 1.0, "component" => component);
+        Self {
+            permit: Some(permit),
+            component,
+        }
+    }
+
+    fn forget(mut self) {
+        self.permit.take().unwrap().forget()
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        decrement_gauge!("underload.size", 1.0, "component" => self.component);
     }
 }
 
