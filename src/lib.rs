@@ -52,6 +52,9 @@ struct ConfStats {
     last_increment: Instant,
     /// current capacity of queue
     queue_capacity: usize,
+    /// Exponential weighted average of latency ONLY when
+    /// available_concurrent.available_permits() == 0
+    average_latency_at_capacity: f64,
 }
 
 impl LoadShedConf {
@@ -67,6 +70,7 @@ impl LoadShedConf {
                 last_decrement: Instant::now(),
                 last_increment: Instant::now(),
                 queue_capacity: 1,
+                average_latency_at_capacity: target,
             })),
         }
     }
@@ -76,7 +80,7 @@ impl LoadShedConf {
             let mut stats = self.stats.lock().unwrap();
             let desired_queue_capacity = usize::max(
                 1,
-                (stats.concurrency as f64 * ((self.target / stats.moving_average) - 1.0)).floor()
+                (stats.concurrency as f64 * ((self.target / stats.average_latency_at_capacity) - 1.0)).floor()
                     as usize,
             );
             gauge!("underload.capacity", desired_queue_capacity as f64, "component" => "queue");
@@ -121,7 +125,8 @@ impl LoadShedConf {
         stats.moving_average =
             (stats.moving_average * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
         gauge!("underload.average_latency", stats.moving_average);
-        if self.available_concurrency.available_permits() == 0
+        let available_permits = self.available_concurrency.available_permits();
+        if available_permits == 0
             && stats.moving_average < self.target
             && stats.last_increment.elapsed().as_secs_f64() > self.target
         {
@@ -137,6 +142,10 @@ impl LoadShedConf {
             stats.concurrency -= 1;
             stats.last_decrement = Instant::now();
             gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
+        }
+        if available_permits == 0 {
+            stats.average_latency_at_capacity =
+                (stats.average_latency_at_capacity * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
         }
     }
 }
