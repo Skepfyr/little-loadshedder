@@ -17,3 +17,5 @@ tower = { version = "0.4", features = ["make"] }
 futures = "0.3"
 rand = "0.8"
 metrics-exporter-prometheus = "0.6"
+structopt = "0.3"
+dialoguer = "0.8"

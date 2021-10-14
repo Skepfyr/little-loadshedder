@@ -45,7 +45,7 @@ struct ConfStats {
     /// Seconds
     moving_average: f64,
     /// Concurrency: number of permits in the available_concurrency semaphore
-    concurrency: f64,
+    concurrency: u32,
     /// Controls how often concurrency is updated
     last_decrement: Instant,
     /// current capacity of queue
@@ -61,7 +61,7 @@ impl LoadShedConf {
             available_queue: Arc::new(Semaphore::new(1)),
             stats: Arc::new(Mutex::new(ConfStats {
                 moving_average: target,
-                concurrency: 1.0,
+                concurrency: 1,
                 last_decrement: Instant::now(),
                 queue_capacity: 1,
             })),
@@ -73,7 +73,8 @@ impl LoadShedConf {
             let mut stats = self.stats.lock().unwrap();
             let desired_queue_capacity = usize::max(
                 1,
-                (stats.concurrency * ((self.target / stats.moving_average) - 1.0)).floor() as usize,
+                (stats.concurrency as f64 * ((self.target / stats.moving_average) - 1.0)).floor()
+                    as usize,
             );
             gauge!("underload.capacity", desired_queue_capacity as f64, "component" => "queue");
             match desired_queue_capacity.cmp(&stats.queue_capacity) {
@@ -124,15 +125,16 @@ impl LoadShedConf {
         if self.available_concurrency.available_permits() == 0 && stats.moving_average < self.target
         {
             self.available_concurrency.add_permits(1);
-            stats.concurrency += 1.0;
-            gauge!("underload.capacity", stats.concurrency, "component" => "service");
+            stats.concurrency += 1;
+            gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
         } else if stats.moving_average > self.target
             && stats.last_decrement.elapsed().as_secs_f64() > self.target
+            && stats.concurrency > 1
         {
             concurrency_permit.forget();
-            stats.concurrency -= 1.0;
+            stats.concurrency -= 1;
             stats.last_decrement = Instant::now();
-            gauge!("underload.capacity", stats.concurrency, "component" => "service");
+            gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
         }
     }
 }
