@@ -75,18 +75,15 @@ impl Client {
 fn user_input(rps: Sender<u64>, client: Client) {
     loop {
         let selection = Select::with_theme(&ColorfulTheme::default())
-            .item("Single request")
             .item("Set load")
             .item("Burst")
+            .item("Single request")
             .item("Quit")
             .default(0)
             .interact()
             .unwrap();
         match selection {
             0 => {
-                client.send_req();
-            }
-            1 => {
                 rps.send(
                     Input::with_theme(&ColorfulTheme::default())
                         .with_prompt("Requests per second:")
@@ -95,7 +92,7 @@ fn user_input(rps: Sender<u64>, client: Client) {
                 )
                 .unwrap();
             }
-            2 => {
+            1 => {
                 let old_rps = *rps.borrow();
                 let burst_rps = Input::with_theme(&ColorfulTheme::default())
                     .with_prompt("Requests per second:")
@@ -120,6 +117,9 @@ fn user_input(rps: Sender<u64>, client: Client) {
                     thread::sleep(time);
                     rps.send(old_rps).unwrap();
                 }
+            }
+            2 => {
+                client.send_req();
             }
             3 => break,
             _ => continue,

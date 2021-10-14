@@ -45,16 +45,18 @@ struct ConfStats {
     /// Seconds
     moving_average: f64,
     /// Concurrency: number of permits in the available_concurrency semaphore
-    concurrency: u32,
-    /// Controls how often concurrency is decreased
-    last_decrement: Instant,
-    /// Controls how often concurrency is increased
-    last_increment: Instant,
+    concurrency: usize,
+    /// When the concurrency was last adjusted, to rate limit changing it
+    last_changed: Instant,
     /// current capacity of queue
     queue_capacity: usize,
     /// Exponential weighted average of latency ONLY when
     /// available_concurrent.available_permits() == 0
     average_latency_at_capacity: f64,
+
+    /// Throughput @ last concurrency value
+    previous_throughput: f64,
+    previous_concurrency: usize,
 }
 
 impl LoadShedConf {
@@ -67,10 +69,11 @@ impl LoadShedConf {
             stats: Arc::new(Mutex::new(ConfStats {
                 moving_average: target,
                 concurrency: 1,
-                last_decrement: Instant::now(),
-                last_increment: Instant::now(),
+                last_changed: Instant::now(),
                 queue_capacity: 1,
                 average_latency_at_capacity: target,
+                previous_throughput: 0.0,
+                previous_concurrency: 0,
             })),
         }
     }
@@ -80,8 +83,9 @@ impl LoadShedConf {
             let mut stats = self.stats.lock().unwrap();
             let desired_queue_capacity = usize::max(
                 1,
-                (stats.concurrency as f64 * ((self.target / stats.average_latency_at_capacity) - 1.0)).floor()
-                    as usize,
+                (stats.concurrency as f64
+                    * ((self.target / stats.average_latency_at_capacity) - 1.0))
+                    .floor() as usize,
             );
             gauge!("underload.capacity", desired_queue_capacity as f64, "component" => "queue");
             match desired_queue_capacity.cmp(&stats.queue_capacity) {
@@ -126,26 +130,45 @@ impl LoadShedConf {
             (stats.moving_average * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
         gauge!("underload.average_latency", stats.moving_average);
         let available_permits = self.available_concurrency.available_permits();
-        if available_permits == 0
-            && stats.moving_average < self.target
-            && stats.last_increment.elapsed().as_secs_f64() > self.target
+
+        if stats.last_changed.elapsed().as_secs_f64()
+            > (stats.moving_average / self.ewma_param) / 10.0
+            && available_permits == 0
         {
-            self.available_concurrency.add_permits(1);
-            stats.concurrency += 1;
-            stats.last_increment = Instant::now();
-            gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
-        } else if stats.moving_average > self.target
-            && stats.last_decrement.elapsed().as_secs_f64() > self.target
-            && stats.concurrency > 1
-        {
-            concurrency_permit.forget();
-            stats.concurrency -= 1;
-            stats.last_decrement = Instant::now();
-            gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
+            let current_concurrency = stats.concurrency - available_permits;
+            let throughput = current_concurrency as f64 / stats.moving_average;
+            let negative_gradient = (throughput > stats.previous_throughput)
+                ^ (current_concurrency > stats.previous_concurrency);
+            if negative_gradient || (stats.moving_average > self.target) {
+                if stats.concurrency >= 2 {
+                    // negative gradient so decrease concurrency
+                    concurrency_permit.forget();
+                    stats.concurrency -= 1;
+                    gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
+
+                    let latency_factor =
+                        stats.concurrency as f64 / (stats.concurrency as f64 + 1.0);
+                    stats.moving_average *= latency_factor;
+                    stats.average_latency_at_capacity *= latency_factor;
+                }
+            } else {
+                self.available_concurrency.add_permits(1);
+                stats.concurrency += 1;
+                gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
+
+                let latency_factor = stats.concurrency as f64 / (stats.concurrency as f64 - 1.0);
+                stats.moving_average *= latency_factor;
+                stats.average_latency_at_capacity *= latency_factor;
+            }
+
+            stats.previous_throughput = throughput;
+            stats.previous_concurrency = current_concurrency;
+            stats.last_changed = Instant::now()
         }
-        if available_permits == 0 {
-            stats.average_latency_at_capacity =
-                (stats.average_latency_at_capacity * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
+        if available_permits <= usize::max(1, stats.concurrency / 10) {
+            stats.average_latency_at_capacity = (stats.average_latency_at_capacity
+                * (1.0 - self.ewma_param))
+                + (self.ewma_param * elapsed);
         }
     }
 }

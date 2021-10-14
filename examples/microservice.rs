@@ -26,7 +26,7 @@ async fn main() {
         .unwrap();
 
     let service = LinearService::default();
-    let service = LoadShed::new(service, 0.01, Duration::from_millis(200));
+    let service = LoadShed::new(service, 0.01, Duration::from_millis(2000));
 
     let server = Server::bind(&addr).serve(Shared::new(service));
 
@@ -58,7 +58,7 @@ impl Service<Request<Body>> for LinearService {
             let count = inflight.fetch_add(1, Ordering::AcqRel) + 1;
             let sleep = {
                 let mut average = average.lock().unwrap();
-                *average = *average * 0.95 + count as f64 * 0.05;
+                *average = *average * 0.5 + count as f64 * 0.5;
                 Duration::from_secs_f64((100.0 + *average * *average) / 1000.0)
             };
             tokio::time::sleep(sleep).await;
