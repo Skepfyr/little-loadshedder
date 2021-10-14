@@ -19,7 +19,7 @@ use std::{
 // Possible extension: You could hit maximum throughput before target latency on system
 // and should not increase concurrency beyond that point.
 
-use metrics::{gauge, histogram, increment_counter};
+use metrics::{decrement_gauge, gauge, histogram, increment_counter, increment_gauge};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tower::Service;
@@ -75,7 +75,7 @@ impl LoadShedConf {
                 1,
                 (stats.concurrency * ((self.target / stats.moving_average) - 1.0)).floor() as usize,
             );
-            gauge!("underload.capacity", desired_queue_capacity as f64, "type" => "queue");
+            gauge!("underload.capacity", desired_queue_capacity as f64, "component" => "queue");
             match desired_queue_capacity.cmp(&stats.queue_capacity) {
                 Ordering::Less => {
                     match self
@@ -100,6 +100,7 @@ impl LoadShedConf {
             Err(TryAcquireError::NoPermits) => return Err(()),
             Err(TryAcquireError::Closed) => panic!("queue semaphore closed?"),
         };
+        increment_gauge!("underload.size", 1.0, "component" => "queue");
         let concurrency_permit = self
             .available_concurrency
             .clone()
@@ -107,10 +108,13 @@ impl LoadShedConf {
             .await
             .unwrap();
         drop(queue_permit);
+        decrement_gauge!("underload.size", 1.0, "component" => "queue");
+        increment_gauge!("underload.size", 1.0, "component" => "service");
         Ok(concurrency_permit)
     }
 
     fn stop(&mut self, elapsed: Duration, concurrency_permit: OwnedSemaphorePermit) {
+        decrement_gauge!("underload.size", 1.0, "component" => "service");
         let elapsed = elapsed.as_secs_f64();
         histogram!("underload.latency", elapsed);
         let mut stats = self.stats.lock().expect("To be able to lock stats");
@@ -121,14 +125,14 @@ impl LoadShedConf {
         {
             self.available_concurrency.add_permits(1);
             stats.concurrency += 1.0;
-            gauge!("underload.capacity", stats.concurrency, "type" => "concurrency");
+            gauge!("underload.capacity", stats.concurrency, "component" => "service");
         } else if stats.moving_average > self.target
             && stats.last_decrement.elapsed().as_secs_f64() > self.target
         {
             concurrency_permit.forget();
             stats.concurrency -= 1.0;
             stats.last_decrement = Instant::now();
-            gauge!("underload.capacity", stats.concurrency, "type" => "concurrency");
+            gauge!("underload.capacity", stats.concurrency, "component" => "service");
         }
     }
 }
@@ -181,11 +185,11 @@ where
         Box::pin(async move {
             let permit = match conf.start().await {
                 Ok(permit) => {
-                    increment_counter!("underload.request", "type" => "accepted");
+                    increment_counter!("underload.request", "status" => "accepted");
                     permit
                 }
                 Err(_) => {
-                    increment_counter!("underload.request", "type" => "rejected");
+                    increment_counter!("underload.request", "status" => "rejected");
                     return Err(LoadShedError::QueueFull);
                 }
             };
