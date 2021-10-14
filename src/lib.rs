@@ -130,10 +130,11 @@ impl LoadShedConf {
             (stats.moving_average * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
         gauge!("underload.average_latency", stats.moving_average);
         let available_permits = self.available_concurrency.available_permits();
+        let at_max_concurrency = available_permits <= usize::max(1, stats.concurrency / 10);
 
         if stats.last_changed.elapsed().as_secs_f64()
             > (stats.moving_average / self.ewma_param) / 10.0
-            && available_permits == 0
+            && at_max_concurrency
         {
             let current_concurrency = stats.concurrency - available_permits;
             let throughput = current_concurrency as f64 / stats.moving_average;
@@ -165,7 +166,7 @@ impl LoadShedConf {
             stats.previous_concurrency = current_concurrency;
             stats.last_changed = Instant::now()
         }
-        if available_permits <= usize::max(1, stats.concurrency / 10) {
+        if at_max_concurrency {
             stats.average_latency_at_capacity = (stats.average_latency_at_capacity
                 * (1.0 - self.ewma_param))
                 + (self.ewma_param * elapsed);

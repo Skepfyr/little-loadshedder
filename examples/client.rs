@@ -23,7 +23,7 @@ async fn main() {
 
     PrometheusBuilder::new()
         .listen_address("0.0.0.0:9001".parse::<SocketAddr>().unwrap())
-        .set_buckets(&[0.0, 0.05, 0.1, 0.15, 0.20, 0.25, 0.30])
+        .set_buckets(&[0.0, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0])
         .install()
         .unwrap();
 
