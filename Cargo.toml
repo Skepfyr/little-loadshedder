@@ -1,8 +1,12 @@
 [package]
 name = "underload"
+description = "Latency-based load-shedding hyper/tower middleware"
 version = "0.1.0"
 edition = "2018"
-publish = ["metaswitch"]
+repository = "https://github.com/microsoft/underload"
+keywords = ["hyper", "middleware", "load"]
+categories = ["network-programming"]
+exclude = ["metrics"]
 
 [dependencies]
 metrics = "0.17"
