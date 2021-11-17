@@ -263,7 +263,7 @@
                 },
                 {
                     "exemplar": true,
-                    "expr": "underload_average_latency",
+                    "expr": "loadshedder_average_latency",
                     "hide": false,
                     "interval": "",
                     "legendFormat": "estimated latency",
@@ -345,14 +345,14 @@
             "targets": [
                 {
                     "exemplar": true,
-                    "expr": "underload_capacity",
+                    "expr": "loadshedder_capacity",
                     "interval": "",
                     "legendFormat": "capacity of {{component}}",
                     "refId": "A"
                 },
                 {
                     "exemplar": true,
-                    "expr": "underload_size",
+                    "expr": "loadshedder_size",
                     "hide": false,
                     "interval": "",
                     "legendFormat": "size of {{component}}",
@@ -360,7 +360,7 @@
                 },
                 {
                     "exemplar": true,
-                    "expr": "sum(underload_capacity) / 2",
+                    "expr": "sum(loadshedder_capacity) / 2",
                     "hide": false,
                     "interval": "",
                     "legendFormat": "max throughput",

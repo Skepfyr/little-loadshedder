@@ -19,7 +19,7 @@ use tokio::{
     task::spawn_blocking,
 };
 use tower::{make::Shared, Service};
-use underload::{LoadShed, LoadShedError};
+use little_loadshedder::{LoadShed, LoadShedError};
 
 #[tokio::main]
 async fn main() {

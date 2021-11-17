@@ -1,4 +1,4 @@
-# Underload
+# Little Loadshedder
 A Rust hyper/tower service that implements load shedding with queuing & concurrency limiting based on latency.
 
 ## License

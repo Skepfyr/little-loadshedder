@@ -61,11 +61,11 @@ struct ConfStats {
 
 impl LoadShedConf {
     fn new(ewma_param: f64, target: f64) -> Self {
-        gauge!("underload.capacity", 1.0, "component" => "service");
-        gauge!("underload.capacity", 1.0, "component" => "queue");
-        gauge!("underload.size", 0.0, "component" => "service");
-        gauge!("underload.size", 0.0, "component" => "queue");
-        gauge!("underload.average_latency", target);
+        gauge!("loadshedder.capacity", 1.0, "component" => "service");
+        gauge!("loadshedder.capacity", 1.0, "component" => "queue");
+        gauge!("loadshedder.size", 0.0, "component" => "service");
+        gauge!("loadshedder.size", 0.0, "component" => "queue");
+        gauge!("loadshedder.average_latency", target);
         Self {
             target,
             ewma_param,
@@ -92,7 +92,7 @@ impl LoadShedConf {
                     * ((self.target / stats.average_latency_at_capacity) - 1.0))
                     .floor() as usize,
             );
-            gauge!("underload.capacity", desired_queue_capacity as f64, "component" => "queue");
+            gauge!("loadshedder.capacity", desired_queue_capacity as f64, "component" => "queue");
             match desired_queue_capacity.cmp(&stats.queue_capacity) {
                 Ordering::Less => {
                     match self
@@ -129,11 +129,11 @@ impl LoadShedConf {
 
     fn stop(&mut self, elapsed: Duration, concurrency_permit: Permit) {
         let elapsed = elapsed.as_secs_f64();
-        histogram!("underload.latency", elapsed);
+        histogram!("loadshedder.latency", elapsed);
         let mut stats = self.stats.lock().expect("To be able to lock stats");
         stats.moving_average =
             (stats.moving_average * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
-        gauge!("underload.average_latency", stats.moving_average);
+        gauge!("loadshedder.average_latency", stats.moving_average);
         let available_permits = self.available_concurrency.available_permits();
         let at_max_concurrency = available_permits <= usize::max(1, stats.concurrency / 10);
 
@@ -150,7 +150,7 @@ impl LoadShedConf {
                     // negative gradient so decrease concurrency
                     concurrency_permit.forget();
                     stats.concurrency -= 1;
-                    gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
+                    gauge!("loadshedder.capacity", stats.concurrency as f64, "component" => "service");
 
                     let latency_factor =
                         stats.concurrency as f64 / (stats.concurrency as f64 + 1.0);
@@ -160,7 +160,7 @@ impl LoadShedConf {
             } else {
                 self.available_concurrency.add_permits(1);
                 stats.concurrency += 1;
-                gauge!("underload.capacity", stats.concurrency as f64, "component" => "service");
+                gauge!("loadshedder.capacity", stats.concurrency as f64, "component" => "service");
 
                 let latency_factor = stats.concurrency as f64 / (stats.concurrency as f64 - 1.0);
                 stats.moving_average *= latency_factor;
@@ -187,7 +187,7 @@ struct Permit {
 
 impl Permit {
     fn new(permit: OwnedSemaphorePermit, component: &'static str) -> Self {
-        increment_gauge!("underload.size", 1.0, "component" => component);
+        increment_gauge!("loadshedder.size", 1.0, "component" => component);
         Self {
             permit: Some(permit),
             component,
@@ -201,7 +201,7 @@ impl Permit {
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        decrement_gauge!("underload.size", 1.0, "component" => self.component);
+        decrement_gauge!("loadshedder.size", 1.0, "component" => self.component);
     }
 }
 
@@ -251,11 +251,11 @@ where
         Box::pin(async move {
             let permit = match conf.start().await {
                 Ok(permit) => {
-                    increment_counter!("underload.request", "status" => "accepted");
+                    increment_counter!("loadshedder.request", "status" => "accepted");
                     permit
                 }
                 Err(_) => {
-                    increment_counter!("underload.request", "status" => "rejected");
+                    increment_counter!("loadshedder.request", "status" => "rejected");
                     return Err(LoadShedError::Overload);
                 }
             };

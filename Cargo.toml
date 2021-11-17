@@ -1,10 +1,10 @@
 [package]
-name = "underload"
+name = "little-loadshedder"
 description = "Latency-based load-shedding hyper/tower middleware"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 edition = "2018"
-repository = "https://github.com/microsoft/underload"
+repository = "https://github.com/Skepfyr/little-loadshedder"
 keywords = ["hyper", "middleware", "load"]
 categories = ["network-programming"]
 exclude = ["metrics"]
