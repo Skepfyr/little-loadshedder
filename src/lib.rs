@@ -9,7 +9,8 @@
 //! [Little's law]: https://en.wikipedia.org/wiki/Little%27s_law
 //! [metrics]: https://docs.rs/metrics/latest/metrics
 
-#![warn(missing_docs)]
+#![doc(html_root_url = "https://docs.rs/little-loadshedder/0.1.0")]
+#![warn(missing_debug_implementations, missing_docs, non_ascii_idents)]
 #![forbid(unsafe_code)]
 
 use std::{
@@ -428,5 +429,13 @@ impl<Inner> Layer<Inner> for LoadShedLayer {
 
     fn layer(&self, inner: Inner) -> Self::Service {
         LoadShed::new(inner, self.ewma_param, self.target)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn html_root_url_version() {
+        version_sync::assert_html_root_url_updated!("src/lib.rs");
     }
 }
