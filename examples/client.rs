@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, thread, time::Duration};
+use std::{net::Ipv4Addr, thread, time::Duration};
 
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use hyper::{client::HttpConnector, Uri};
@@ -22,8 +22,9 @@ async fn main() {
     let args = Args::from_args();
 
     PrometheusBuilder::new()
-        .listen_address("0.0.0.0:9001".parse::<SocketAddr>().unwrap())
+        .with_http_listener((Ipv4Addr::LOCALHOST, 9001))
         .set_buckets(&[0.0, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0])
+        .unwrap()
         .install()
         .unwrap();
 

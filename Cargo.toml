@@ -10,17 +10,18 @@ categories = ["network-programming"]
 exclude = ["metrics"]
 
 [dependencies]
-metrics = "0.17"
+metrics = { version = "0.20", optional = true }
 thiserror = "1"
 tokio = { version = "1", default-features = false, features = ["sync"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 
 [dev-dependencies]
+dialoguer = "0.10"
+futures = "0.3"
 hyper = { version = "0.14", features = ["full"] }
+metrics = "0.20"
+metrics-exporter-prometheus = "0.11"
+rand = "0.8"
+structopt = "0.3"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.4", features = ["make"] }
-futures = "0.3"
-rand = "0.8"
-metrics-exporter-prometheus = "0.6"
-structopt = "0.3"
-dialoguer = "0.8"

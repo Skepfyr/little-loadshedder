@@ -1,6 +1,6 @@
 use std::{
     convert::Infallible,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -12,6 +12,7 @@ use std::{
 use dialoguer::{theme::ColorfulTheme, Input};
 use futures::{future::BoxFuture, FutureExt};
 use hyper::{service::service_fn, Body, Request, Response, Server};
+use little_loadshedder::{LoadShed, LoadShedError};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::{
     select,
@@ -19,14 +20,15 @@ use tokio::{
     task::spawn_blocking,
 };
 use tower::{make::Shared, Service};
-use little_loadshedder::{LoadShed, LoadShedError};
 
 #[tokio::main]
 async fn main() {
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
 
     PrometheusBuilder::new()
+        .with_http_listener((Ipv4Addr::LOCALHOST, 9000))
         .set_buckets(&[0.0, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0])
+        .unwrap()
         .install()
         .unwrap();
 
@@ -57,7 +59,7 @@ async fn main() {
     });
 
     select! {
-        Err(e) = server => eprintln!("server error: {}", e),
+        Err(e) = server => eprintln!("server error: {e}"),
         _ = user_input => {}
     }
 }
@@ -101,7 +103,7 @@ impl Service<Request<Body>> for LinearService {
             };
             tokio::time::sleep(sleep).await;
             inflight.fetch_sub(1, Ordering::AcqRel);
-            Ok(Response::new(format!("Hello, World {}", count).into()))
+            Ok(Response::new(format!("Hello, World {count}").into()))
         }
         .boxed()
     }
