@@ -11,15 +11,15 @@ use std::{
 
 use dialoguer::{theme::ColorfulTheme, Input};
 use futures::{future::BoxFuture, FutureExt};
-use hyper::{service::service_fn, Body, Request, Response, Server};
-use little_loadshedder::{LoadShed, LoadShedError};
+use hyper::{Body, Request, Response, Server};
+use little_loadshedder::{LoadShedLayer, LoadShedResponse};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::{
     select,
     sync::watch::{channel, Receiver},
     task::spawn_blocking,
 };
-use tower::{make::Shared, Service};
+use tower::{make::Shared, util::MapResponseLayer, Service, ServiceBuilder};
 
 #[tokio::main]
 async fn main() {
@@ -33,19 +33,15 @@ async fn main() {
         .unwrap();
 
     let (multiplier_tx, multiplier_rx) = channel(1.0);
-    let service = LinearService::new(multiplier_rx);
-    let mut service = LoadShed::new(service, 0.01, Duration::from_millis(2000));
-    let service = service_fn(move |req| {
-        let resp = service.call(req);
-        async move {
-            match resp.await {
-                Ok(resp) => Ok(resp),
-                Err(LoadShedError::Inner(inner)) => match inner {},
-                Err(LoadShedError::Overload) => Response::builder().status(503).body(Body::empty()),
+    let service = ServiceBuilder::new()
+        .layer(MapResponseLayer::new(|resp| match resp {
+            LoadShedResponse::Inner(inner) => inner,
+            LoadShedResponse::Overload => {
+                Response::builder().status(503).body(Body::empty()).unwrap()
             }
-        }
-    });
-
+        }))
+        .layer(LoadShedLayer::new(0.01, Duration::from_millis(2000)))
+        .service(LinearService::new(multiplier_rx));
     let server = Server::bind(&addr).serve(Shared::new(service));
     let user_input = spawn_blocking(move || loop {
         multiplier_tx
