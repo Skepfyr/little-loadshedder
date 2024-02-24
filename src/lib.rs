@@ -9,7 +9,6 @@
 //! [Little's law]: https://en.wikipedia.org/wiki/Little%27s_law
 //! [metrics]: https://docs.rs/metrics/latest/metrics
 
-#![doc(html_root_url = "https://docs.rs/little-loadshedder/0.1.0")]
 #![warn(missing_debug_implementations, missing_docs, non_ascii_idents)]
 #![forbid(unsafe_code)]
 
@@ -181,7 +180,7 @@ impl LoadShedConf {
         stats.average_latency =
             (stats.average_latency * (1.0 - self.ewma_param)) + (self.ewma_param * elapsed);
         #[cfg(feature = "metrics")]
-        gauge!("loadshedder.average_latency", stats.moving_average);
+        gauge!("loadshedder.average_latency", stats.average_latency);
         if at_max_concurrency {
             stats.average_latency_at_capacity = (stats.average_latency_at_capacity
                 * (1.0 - self.ewma_param))
@@ -426,13 +425,5 @@ impl<Inner> Layer<Inner> for LoadShedLayer {
 
     fn layer(&self, inner: Inner) -> Self::Service {
         LoadShed::new(inner, self.ewma_param, self.target)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn html_root_url_version() {
-        version_sync::assert_html_root_url_updated!("src/lib.rs");
     }
 }

@@ -1,7 +1,12 @@
 use std::{net::Ipv4Addr, thread, time::Duration};
 
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
-use hyper::{client::HttpConnector, Uri};
+use http_body_util::Empty;
+use hyper::{body::Bytes, Uri};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client as HyperClient},
+    rt::TokioExecutor,
+};
 use metrics::{histogram, increment_counter};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use structopt::StructOpt;
@@ -45,14 +50,14 @@ async fn main() {
 
 #[derive(Debug, Clone)]
 struct Client {
-    client: hyper::Client<HttpConnector>,
+    client: HyperClient<HttpConnector, Empty<Bytes>>,
     uri: Uri,
 }
 
 impl Client {
     fn new(uri: Uri) -> Self {
         Self {
-            client: hyper::Client::new(),
+            client: HyperClient::builder(TokioExecutor::new()).build_http(),
             uri,
         }
     }

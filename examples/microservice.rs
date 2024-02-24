@@ -11,15 +11,20 @@ use std::{
 
 use dialoguer::{theme::ColorfulTheme, Input};
 use futures::{future::BoxFuture, FutureExt};
-use hyper::{Body, Request, Response, Server};
+use hyper::{Request, Response};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto,
+    service::TowerToHyperService,
+};
 use little_loadshedder::{LoadShedLayer, LoadShedResponse};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::{
-    select,
+    net::TcpListener,
     sync::watch::{channel, Receiver},
     task::spawn_blocking,
 };
-use tower::{make::Shared, util::MapResponseLayer, Service, ServiceBuilder};
+use tower::{util::MapResponseLayer, Service, ServiceBuilder};
 
 #[tokio::main]
 async fn main() {
@@ -37,13 +42,13 @@ async fn main() {
         .layer(MapResponseLayer::new(|resp| match resp {
             LoadShedResponse::Inner(inner) => inner,
             LoadShedResponse::Overload => {
-                Response::builder().status(503).body(Body::empty()).unwrap()
+                Response::builder().status(503).body(String::new()).unwrap()
             }
         }))
         .layer(LoadShedLayer::new(0.01, Duration::from_millis(2000)))
         .service(LinearService::new(multiplier_rx));
-    let server = Server::bind(&addr).serve(Shared::new(service));
-    let user_input = spawn_blocking(move || loop {
+    let service = TowerToHyperService::new(service);
+    spawn_blocking(move || loop {
         multiplier_tx
             .send(
                 Input::with_theme(&ColorfulTheme::default())
@@ -54,9 +59,17 @@ async fn main() {
             .unwrap();
     });
 
-    select! {
-        Err(e) = server => eprintln!("server error: {e}"),
-        _ = user_input => {}
+    let listener = TcpListener::bind(&addr).await.unwrap();
+    loop {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let io = TokioIo::new(tcp);
+        let service = service.clone();
+        tokio::spawn(async move {
+            auto::Builder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(io, service)
+                .await
+                .unwrap();
+        });
     }
 }
 
@@ -77,8 +90,8 @@ impl LinearService {
     }
 }
 
-impl Service<Request<Body>> for LinearService {
-    type Response = Response<Body>;
+impl<Body> Service<Request<Body>> for LinearService {
+    type Response = Response<String>;
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -99,7 +112,7 @@ impl Service<Request<Body>> for LinearService {
             };
             tokio::time::sleep(sleep).await;
             inflight.fetch_sub(1, Ordering::AcqRel);
-            Ok(Response::new(format!("Hello, World {count}").into()))
+            Ok(Response::new(format!("Hello, World {count}")))
         }
         .boxed()
     }
